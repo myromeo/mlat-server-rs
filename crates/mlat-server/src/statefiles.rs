@@ -7,7 +7,6 @@ use mlat_core::engine::HealthReport;
 use mlat_core::geodesy::ecef2llh;
 use mlat_core::pairing::round_dec;
 use serde_json::{json, Map, Value};
-use std::io::Write;
 use std::sync::atomic::Ordering;
 
 /// Python's `round(x, ndigits)` as a JSON float.
@@ -28,13 +27,13 @@ fn bad_syncs_json(x: f64, nd: Option<usize>) -> Value {
     }
 }
 
+/// Writes the file whole, then renames it into place so readers never see half of it.
+/// (Serialised in memory first: straight into the file it is one system call per token.)
 fn write_atomic(path: std::path::PathBuf, v: &Value) {
     let tmp = path.with_extension("json.tmp");
-    if let Ok(mut f) = std::fs::File::create(&tmp) {
-        if serde_json::to_writer(&mut f, v).is_ok() {
-            let _ = f.flush();
-            let _ = std::fs::rename(&tmp, &path);
-        }
+    let Ok(bytes) = serde_json::to_vec(v) else { return };
+    if std::fs::write(&tmp, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
 
@@ -52,18 +51,22 @@ pub fn write_state(server: &Server, health: &HealthReport, interest: &InterestSn
     let work = &server.cfg.work_dir;
     let hex = |v: &Vec<u32>| v.iter().map(|i| format!("{i:06x}")).collect::<Vec<_>>();
 
-    // ---- aircraft.json
+    // ---- aircraft.json (the counts are needed for the status line even when the file is not written)
+    let write_aircraft = server.cfg.aircraft_json;
     let mut aircraft = Map::new();
     let (mut ac_count_sync, mut ac_total) = (0usize, 0usize);
     for a in &health.aircraft {
         ac_total += 1;
-        let seen = a.seen.max(interest.ac_seen.get(&a.icao).copied().unwrap_or(0.0));
-        let elapsed_seen = now - seen;
         let sync_i = interest.ac_sync.get(&a.icao).copied().unwrap_or(0);
-        let mlat_i = interest.ac_mlat.get(&a.icao).copied().unwrap_or(0);
         if sync_i > 0 {
             ac_count_sync += 1;
         }
+        if !write_aircraft {
+            continue;
+        }
+        let seen = a.seen.max(interest.ac_seen.get(&a.icao).copied().unwrap_or(0.0));
+        let elapsed_seen = now - seen;
+        let mlat_i = interest.ac_mlat.get(&a.icao).copied().unwrap_or(0);
         let name = format!("{:06X}", a.icao);
         let mut s = Map::new();
         s.insert("icao".into(), json!(name));
@@ -162,7 +165,9 @@ pub fn write_state(server: &Server, health: &HealthReport, interest: &InterestSn
 
     write_atomic(work.join("sync.json"), &Value::Object(sync));
     write_atomic(work.join("clients.json"), &Value::Object(clients));
-    write_atomic(work.join("aircraft.json"), &Value::Object(aircraft));
+    if write_aircraft {
+        write_atomic(work.join("aircraft.json"), &Value::Object(aircraft));
+    }
 
     // ---- status line
     let total_outlier_percent = 100.0 * health.outlier_sum / (health.sync_sum + 0.1);

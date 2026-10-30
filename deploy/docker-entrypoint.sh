@@ -28,6 +28,7 @@ add_each --write-csv "${MLAT_WRITE_CSV:-}"
 [ -n "${MLAT_ENGINE_THREADS:-}" ] && args="$args --engine-threads $MLAT_ENGINE_THREADS"
 [ -n "${MLAT_IO_THREADS:-}" ] && args="$args --io-threads $MLAT_IO_THREADS"
 [ -n "${MLAT_SOURCE_URL:-}" ] && args="$args --source-url $MLAT_SOURCE_URL"
+case "${MLAT_AIRCRAFT_JSON:-1}" in 0|false|no|off) args="$args --no-aircraft-json" ;; esac
 [ -n "${MLAT_DUMP_PSEUDORANGE:-}" ] && args="$args --dump-pseudorange $MLAT_DUMP_PSEUDORANGE"
 
 # the MOTD may contain spaces, so it is passed as a single argument

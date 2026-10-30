@@ -56,9 +56,10 @@ Every option of the Python server is accepted:
 | `--dump-pseudorange FILE` | solver inputs as JSON lines; SIGHUP reopens the file |
 | `--partition I/N` | share the aircraft between N servers (same hash as the original) |
 | `--work-dir DIR` | state files: `sync.json`, `clients.json`, `aircraft.json`, `handshakes.log` |
+| `--no-aircraft-json` | don't write `aircraft.json` (about 1 MB every 15 s); a saving where nothing reads it |
 | `--motd`, `--status-interval`, `--tag`, `--check-leaks` | as the original (`--check-leaks` does nothing) |
 
-Added: `--engine-threads N` (position engine threads, default 1), `--io-threads N` (connection
+Added: `--no-aircraft-json`, `--engine-threads N` (position engine threads, default 1), `--io-threads N` (connection
 threads, default min(cores, 4)) and `--source-url URL` (the AGPL source location sent to receivers).
 
 ## How it works

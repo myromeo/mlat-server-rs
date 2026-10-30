@@ -22,6 +22,8 @@ pub struct Config {
     pub status_interval: f64,
     /// `--partition I/N`
     pub partition: (u32, u32),
+    /// Write aircraft.json (about 1 MB every 15 s); nothing in the stack needs to read it.
+    pub aircraft_json: bool,
 }
 
 /// One connected receiver.

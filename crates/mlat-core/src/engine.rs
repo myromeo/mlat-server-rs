@@ -402,9 +402,24 @@ struct Matcher {
     registry: Arc<Registry>,
     store: Arc<PairStore>,
     collector: Arc<Mutex<Collector>>,
+    /// Wakes the clock thread when the collector goes from empty to holding a group.
+    kick: Sender<()>,
     results: Sender<MlatResult>,
     rstats: ResolveStats,
     info: Arc<AcInfoStore>,
+}
+
+/// Changes the collector, and wakes the clock thread if the new group is now the earliest deadline.
+fn collect(collector: &Mutex<Collector>, kick: &Sender<()>, f: impl FnOnce(&mut Collector)) {
+    let was_empty = {
+        let mut c = collector.lock().unwrap();
+        let empty = c.next_due().is_none();
+        f(&mut c);
+        empty
+    };
+    if was_empty {
+        let _ = kick.try_send(());
+    }
 }
 
 impl Matcher {
@@ -451,7 +466,7 @@ impl Matcher {
                 }
             }
             MatchMsg::Mlat { uid, ts, msg, now, .. } => {
-                self.collector.lock().unwrap().add(uid, ts, &msg, now);
+                collect(&self.collector, &self.kick, |c| c.add(uid, ts, &msg, now));
             }
             MatchMsg::Resolve { group, now, .. } => {
                 if !group.dummy {
@@ -562,7 +577,7 @@ impl Matcher {
         if let Some(entry) = self.points.get_mut(&key) {
             // later copies of a pair for an aircraft in mlat mode also feed the mlat grouping
             if entry.do_mlat {
-                self.collector.lock().unwrap().add(r0.uid, m.et, &m.em, now);
+                collect(&self.collector, &self.kick, |c| c.add(r0.uid, m.et, &m.em, now));
             }
             let Some(details) = entry.details.as_ref() else { return };
             if interval > 5.0 {
@@ -600,7 +615,7 @@ impl Matcher {
         ac.mlat.seen = now;
         let do_mlat = (ac.do_mlat || ac.mlat.force_mlat) && ac.tracking.len() >= 3;
         if do_mlat {
-            self.collector.lock().unwrap().add_placeholder(r0.uid, m.et, now);
+            collect(&self.collector, &self.kick, |c| c.add_placeholder(r0.uid, m.et, now));
         }
 
         // From here on the pair is remembered, usable or not.
@@ -947,6 +962,7 @@ pub struct Engine {
     handles: Vec<JoinHandle<()>>,
     registry: Arc<Registry>,
     collector: Arc<Mutex<Collector>>,
+    kick_rx: Rx<()>,
     results: Rx<MlatResult>,
     info: Arc<AcInfoStore>,
     /// Global sequence number: orders every event the engine is given.
@@ -985,6 +1001,7 @@ impl Engine {
         let info = Arc::new(AcInfoStore::new(n_matchers));
         let collector = Arc::new(Mutex::new(Collector::new()));
         let (results_tx, results_rx) = unbounded();
+        let (kick_tx, kick_rx) = bounded::<()>(1);
         let mut handles = Vec::new();
 
         let mut pairer_tx = Vec::new();
@@ -1022,6 +1039,7 @@ impl Engine {
                 registry: registry.clone(),
                 store: store.clone(),
                 collector: collector.clone(),
+                kick: kick_tx.clone(),
                 results: results_tx.clone(),
                 rstats: ResolveStats::default(),
                 info: info.clone(),
@@ -1035,6 +1053,7 @@ impl Engine {
             handles,
             registry,
             collector,
+            kick_rx,
             results: results_rx,
             info,
             seq: AtomicU64::new(0),
@@ -1290,6 +1309,11 @@ impl Engine {
             }
         }
         self.collector.lock().unwrap().next_due().filter(|&d| d <= limit)
+    }
+
+    /// Sleeps until `timeout` passes or a group arrives that may be due before then.
+    pub fn wait_for_work(&self, timeout: std::time::Duration) {
+        let _ = self.kick_rx.recv_timeout(timeout);
     }
 
     /// When the next group-collection deadline falls, if any group is waiting.

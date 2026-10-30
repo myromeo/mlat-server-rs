@@ -25,7 +25,7 @@ const HELP: &str = "usage: mlat-server-rs --work-dir DIR [--client-listen [host:
                       [--filtered-basestation-connect host:port]... [--basestation-connect host:port]...
                       [--write-csv FILE]... [--dump-pseudorange FILE] [--partition I/N]
                       [--motd TEXT] [--status-interval SECONDS] [--engine-threads N] [--io-threads N]
-                      [--source-url URL] [--tag NAME] [--check-leaks]
+                      [--source-url URL] [--tag NAME] [--no-aircraft-json] [--check-leaks]
 
 Multilateration server, wire-compatible with the Python mlat-server.";
 
@@ -41,6 +41,7 @@ struct Args {
     write_csv: Vec<String>,
     pseudorange: Option<String>,
     partition: (u32, u32),
+    aircraft_json: bool,
     motd: String,
     status_interval: f64,
     engine_threads: usize,
@@ -105,6 +106,7 @@ fn parse_args() -> Result<Args, String> {
         write_csv: Vec::new(),
         pseudorange: None,
         partition: (1, 1),
+        aircraft_json: true,
         motd: String::new(),
         status_interval: 15.0,
         engine_threads: 1,
@@ -138,6 +140,7 @@ fn parse_args() -> Result<Args, String> {
             "--basestation-connect" => a.unfiltered_connect.push(connect_target(&value(&mut i)?)?),
             "--write-csv" => a.write_csv.push(value(&mut i)?),
             "--dump-pseudorange" => a.pseudorange = Some(value(&mut i)?),
+            "--no-aircraft-json" => a.aircraft_json = false,
             "--check-leaks" => {} // Python memory-leak diagnostics; nothing to check here
             "--partition" => a.partition = partition(&value(&mut i)?)?,
             "--motd" => a.motd = value(&mut i)?,
@@ -291,20 +294,36 @@ async fn connect_sbs(server: Arc<Server>, host: String, port: u16, filtered: boo
     }
 }
 
+/// What the 15 s health pass hands to the state-file writer.
+struct StateJob {
+    health: mlat_core::engine::HealthReport,
+    snapshot: interest::InterestSnapshot,
+    t: f64,
+}
+
+/// Builds and writes the state files and the status line, off the clock thread, so a slow
+/// disk or a large aircraft table cannot delay group deadlines.
+fn state_thread(server: Arc<Server>, rx: crossbeam_channel::Receiver<StateJob>) {
+    let mut status = statefiles::StatusState { next_status: now() + server.cfg.status_interval, last_cpu: 0.0 };
+    for job in rx {
+        statefiles::write_state(&server, &job.health, &job.snapshot, job.t, &mut status);
+    }
+}
+
 /// Drives everything time-based: group-collection deadlines, pairing cleanup,
 /// the 15 s state evaluation and the heartbeats.
-fn clock_thread(server: Arc<Server>) {
+fn clock_thread(server: Arc<Server>, state_tx: crossbeam_channel::Sender<StateJob>) {
     let start = now();
     let mut next_cleanup = start + 1.0;
     let mut next_15 = start;
     let mut next_heartbeat = start + 30.0;
-    let mut status = statefiles::StatusState { next_status: start + server.cfg.status_interval, last_cpu: 0.0 };
     loop {
-        // sleep until something is due, but look again soon: new groups can bring the deadline forward
+        // sleep until the next deadline; a matcher wakes us early when a group becomes the earliest one
+        // (the cap is only a safety net)
         let t0 = now();
         let next = [next_cleanup, next_15, next_heartbeat].into_iter().fold(f64::MAX, f64::min);
         let due = server.engine.peek_due().unwrap_or(f64::MAX).min(next);
-        std::thread::sleep(Duration::from_secs_f64((due - t0).clamp(0.005, 0.025)));
+        server.engine.wait_for_work(Duration::from_secs_f64((due - t0).clamp(0.0005, 0.25)));
         let t = now();
         while server.engine.next_due_before(t).is_some() {
             server.engine.process_next_cohort();
@@ -318,7 +337,7 @@ fn clock_thread(server: Arc<Server>) {
             let (tx, rx) = unbounded();
             let _ = server.interest.send(interest::InterestMsg::Snapshot { reply: tx });
             let snapshot = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-            statefiles::write_state(&server, &health, &snapshot, t, &mut status);
+            let _ = state_tx.send(StateJob { health, snapshot, t });
             server.engine.clear_sync_points();
             next_15 += 15.0;
         }
@@ -355,10 +374,16 @@ fn main() {
     let (itx, irx) = unbounded();
     let server = Arc::new(Server::new(
         engine,
-        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition },
+        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition, aircraft_json: args.aircraft_json },
         itx,
     ));
 
+    if !args.aircraft_json {
+        // a leftover file would look current to anything still reading it
+        for f in ["aircraft.json", "aircraft.json.tmp"] {
+            let _ = std::fs::remove_file(std::path::Path::new(&args.work_dir).join(f));
+        }
+    }
     let mut outs = outputs::Outputs::default();
     for f in &args.write_csv {
         match outputs::CsvWriter::new(f) {
@@ -385,8 +410,11 @@ fn main() {
         std::thread::Builder::new().name("interest".into()).spawn(move || interest::run(s, irx)).unwrap();
         let s = server.clone();
         std::thread::Builder::new().name("results".into()).spawn(move || results::run(s, outs)).unwrap();
+        let (state_tx, state_rx) = unbounded();
         let s = server.clone();
-        std::thread::Builder::new().name("clock".into()).spawn(move || clock_thread(s)).unwrap();
+        std::thread::Builder::new().name("state".into()).spawn(move || state_thread(s, state_rx)).unwrap();
+        let s = server.clone();
+        std::thread::Builder::new().name("clock".into()).spawn(move || clock_thread(s, state_tx)).unwrap();
     }
 
     // connection handling spreads over this many threads (default: up to 4)
