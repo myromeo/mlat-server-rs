@@ -1,0 +1,15 @@
+[package]
+name = "mlat-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Compute squares and cubes with the C library's pow(), as the Python server
+# does. Rust's x*x is exactly rounded; glibc's pow(x, 2.0) is not, and differs
+# in about 1 case in 1,200. Enabled in the Docker build so results match Python bit for bit.
+glibc-pow = []
+
+[dependencies]
+ahash = "0.8"
+crossbeam-channel = "0.5"

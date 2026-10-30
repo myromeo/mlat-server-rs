@@ -1,0 +1,50 @@
+# mlat-server-rs: multilateration server for mlat.uk. Configure it in .env (copy example.env).
+#
+#   cp example.env .env && $EDITOR .env
+#   docker compose build
+#   docker compose up -d
+#
+# Ports
+#   31090/tcp+udp  feeders' mlat-client connects here (open in the VPS firewall)
+#   31003/tcp      filtered results (SBS): only exposed on the docker network, readsb
+#                  reads it by container name:  --net-connector=mlat-server,31003,sbs_in
+#                  (readsb must share a docker network with this service: see docs/DEPLOY.md)
+#
+# Licence: AGPL v3. MLAT_SOURCE_URL must point at where this source is published.
+services:
+  mlat-server:
+    build: .
+    image: ${MLAT_IMAGE:-mlat-server-rs:local}
+    pull_policy: never            # built locally, never pulled from a registry
+    container_name: ${MLAT_CONTAINER_NAME:-mlat-server}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${MLAT_CLIENT_PORT:-31090}:31090/tcp"
+      - "${MLAT_CLIENT_PORT:-31090}:31090/udp"   # only carries traffic if MLAT_CLIENT_LISTEN has a UDP port
+    expose:
+      - "31003"                   # results, reached by readsb over the shared network
+    volumes:
+      # sync.json, clients.json, aircraft.json, positions.csv: live stats and results
+      - mlat-work:/run/mlat-server
+    # CPU cores the server may use: it spreads over however many it is given.
+    # Start at 1 and raise MLAT_CPUS as the receiver count grows.
+    cpus: ${MLAT_CPUS:-1}
+    mem_limit: ${MLAT_MEM_LIMIT:-4096m}
+    ulimits:
+      nofile: 65536               # one socket per station
+    healthcheck:
+      # sync.json is rewritten every 15 s while the server is healthy
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /run/mlat-server/sync.json) )) -lt 90"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mlat-work:

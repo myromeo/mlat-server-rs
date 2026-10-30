@@ -1,0 +1,10 @@
+# Optional: join an existing docker network (e.g. the one readsb is on) instead of this
+# project's own default network. Copy to docker-compose.override.yml (picked up
+# automatically) and set the network name:
+#
+#   cp docker-compose.network.example.yml docker-compose.override.yml
+#
+networks:
+  default:
+    name: your_existing_network
+    external: true

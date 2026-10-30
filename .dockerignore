@@ -1,0 +1,8 @@
+target
+testbed
+docs
+work*
+.git
+.env
+*.pcap
+*.jsonl
