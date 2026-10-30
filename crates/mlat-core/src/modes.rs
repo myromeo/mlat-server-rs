@@ -403,6 +403,44 @@ pub fn decode_any(msg: &[u8]) -> Option<Decoded> {
     }
 }
 
+/// The address `decode_any` would report, without decoding anything else
+/// (no squawk / callsign strings). None exactly when `decode_any` is None.
+pub fn address_of(msg: &[u8]) -> Option<u32> {
+    let df = downlink_format_of(msg)?;
+    let (short, long) = (msg.len() >= 7, msg.len() >= 14);
+    match df {
+        0 | 4 | 5 if short => Some(crc_residual(msg)),
+        16 | 20 | 21 if long => Some(crc_residual(msg)),
+        11 if short => Some(((msg[1] as u32) << 16) | ((msg[2] as u32) << 8) | msg[3] as u32),
+        17 | 18 if long => Some(((msg[1] as u32) << 16) | ((msg[2] as u32) << 8) | msg[3] as u32),
+        _ => None,
+    }
+}
+
 fn downlink_format_of(msg: &[u8]) -> Option<u8> {
     msg.first().map(|b| (b & 0xf8) >> 3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_of_matches_decode_any() {
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for i in 0..200_000u32 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mut m = [0u8; 14];
+            for (k, b) in m.iter_mut().enumerate() {
+                *b = (x >> ((k % 8) * 8)) as u8 ^ (k as u8).wrapping_mul(31);
+            }
+            m[0] = ((i % 32) as u8) << 3 | (m[0] & 7);
+            for len in [0, 1, 6, 7, 13, 14] {
+                let msg = &m[..len];
+                assert_eq!(address_of(msg), decode_any(msg).map(|d| d.address), "{msg:02x?}");
+            }
+        }
+    }
 }

@@ -17,7 +17,7 @@ use crate::atomic::AtomicF64;
 use crate::clock::Clock;
 use crate::collector::Collector;
 use crate::geodesy::{ecef_distance, llh2ecef};
-use crate::modes::{decode_any, decode_cpr, decode_df17, downlink_format, EsType};
+use crate::modes::{address_of, decode_cpr, decode_df17, downlink_format, EsType};
 use crate::normalize::{normalize2, Normalised, PairParams, ReceiverStamps};
 use crate::pairing::{round_dec, AcShared, ClockPairing, PairHealth};
 use crate::receiver::Receiver;
@@ -1170,8 +1170,8 @@ impl Engine {
     fn dispatch_mlat(&self, recv: &Arc<Receiver>, now: f64, ts: f64, msg: Vec<u8>) {
         let uid = recv.uid;
         self.note_dispatch(now);
-        let address = decode_any(&msg).map_or(0, |d| d.address);
-        let shard = icao_shard(address, self.matchers.len());
+        // with one matcher there is nothing to choose
+        let shard = if self.matchers.len() == 1 { 0 } else { icao_shard(address_of(&msg).unwrap_or(0), self.matchers.len()) };
         let seq = self.next_seq();
         let _ = self.matchers[shard].send(MatchMsg::Mlat { seq, uid, ts, msg, now });
     }
@@ -1331,8 +1331,8 @@ impl Engine {
                 continue;
             }
             // a message whose address cannot be decoded resolves to nothing
-            let Some(d) = decode_any(&g.message) else { continue };
-            let shard = icao_shard(d.address, self.matchers.len());
+            let Some(address) = address_of(&g.message) else { continue };
+            let shard = icao_shard(address, self.matchers.len());
             let _ = self.matchers[shard].send(MatchMsg::Resolve { seq, group: g, now: due });
         }
         self.dirty.store(true, Ordering::Relaxed);
