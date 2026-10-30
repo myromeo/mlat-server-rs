@@ -100,3 +100,15 @@ pub async fn serve(server: Arc<Server>, socket: Arc<UdpSocket>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offsets_are_exact_integers() {
+        assert_eq!(offset_time(1 << 60, -5), ((1u64 << 60) - 5) as f64);
+        assert_eq!(offset_time(100, 7), 107.0);
+        assert_eq!(offset_time(3, -10), -7.0);
+    }
+}

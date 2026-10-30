@@ -122,11 +122,13 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for the compose file and every setting in `
 
 ## How it was checked
 
-During development the Rust pipeline was compared with the original at each stage (clock synchronisation, solver, normalisation, Kalman filter, grouping, SBS formatting, the whole pipeline) using values recorded from the Python code and a virtual-clock replay of real traffic, and then as a whole server against a recording of production traffic. That test tooling (capture, replay and comparison scripts) is not part of this repository.
+During development the Rust pipeline was compared with the original at each stage (clock synchronisation, solver, normalisation, Kalman filter, grouping, SBS formatting, the whole pipeline) using values recorded from the Python code and a virtual-clock replay of real traffic, and then as a whole server against a recording of production traffic.
+
+The tooling for that is in this repository, with its own guide: **[testbed/README.md](testbed/README.md)**. It covers `cargo test` (golden tests with synthetic fixtures, which run on a plain checkout), capturing and replaying real receiver traffic into both servers (`mlat-capture`), the Docker setup for the Python reference, and the comparison and ADS-B scoring scripts. A capture contains receiver names and locations, so the captures used for the figures above are not published; the tooling works with any capture you make yourself.
 
 ## Feedback welcome
 
-Most useful: results from larger installations, other client versions, and anything that differs from the original's behaviour. Please open an issue.
+Most useful: results from larger installations, other client versions, and anything that differs from the original's behaviour. If you run the replay comparison on your own capture, please share the numbers. Please open an issue.
 
 ## Credits and licence
 

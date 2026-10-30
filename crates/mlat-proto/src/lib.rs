@@ -218,3 +218,81 @@ impl FrameEncoder {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_lines(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| format!("{{\"mlat\": {{\"t\": {}, \"m\": \"{:028x}\"}}}}", i * 977, i * 7919))
+            .collect()
+    }
+
+    #[test]
+    fn framed_roundtrip_many_frames() {
+        let lines = sample_lines(500);
+        let mut enc = FrameEncoder::new();
+        let mut wire = Vec::new();
+        for chunk in lines.chunks(7) {
+            let text: String = chunk.iter().map(|l| format!("{l}\n")).collect();
+            wire.extend(enc.encode(text.as_bytes()).unwrap());
+        }
+        let mut dec = LineDecoder::new(true);
+        let mut out = Vec::new();
+        dec.push(&wire, &mut out).unwrap();
+        assert_eq!(out, lines);
+    }
+
+    #[test]
+    fn framed_decoder_handles_byte_at_a_time() {
+        let lines = sample_lines(40);
+        let mut enc = FrameEncoder::new();
+        let mut wire = Vec::new();
+        for l in &lines {
+            wire.extend(enc.encode(format!("{l}\n").as_bytes()).unwrap());
+        }
+        let mut dec = LineDecoder::new(true);
+        let mut out = Vec::new();
+        for b in &wire {
+            dec.push(std::slice::from_ref(b), &mut out).unwrap();
+        }
+        assert_eq!(out, lines);
+    }
+
+    #[test]
+    fn large_incompressible_frame() {
+        // pseudo-random text so the deflate output approaches the input size
+        let mut x: u64 = 0x9e3779b97f4a7c15;
+        let mut s = String::new();
+        while s.len() < 30_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            s.push_str(&format!("{x:016x}"));
+        }
+        let text = format!("{s}\n");
+        let mut enc = FrameEncoder::new();
+        let wire = enc.encode(text.as_bytes()).unwrap();
+        let mut dec = LineDecoder::new(true);
+        let mut out = Vec::new();
+        dec.push(&wire, &mut out).unwrap();
+        assert_eq!(out, vec![s]);
+    }
+
+    #[test]
+    fn plain_lines_with_partials() {
+        let mut dec = LineDecoder::new(false);
+        let mut out = Vec::new();
+        dec.push(b"{\"a\":1}\n{\"b\"", &mut out).unwrap();
+        dec.push(b":2}\n", &mut out).unwrap();
+        assert_eq!(out, vec!["{\"a\":1}", "{\"b\":2}"]);
+    }
+
+    #[test]
+    fn negotiation_matches_server_order() {
+        assert_eq!(CompressMode::negotiate(&["none", "zlib"]), Some(CompressMode::Zlib));
+        assert_eq!(CompressMode::negotiate(&["zlib", "zlib2"]), Some(CompressMode::Zlib2));
+        assert_eq!(CompressMode::negotiate(&["lz4"]), None);
+    }
+}

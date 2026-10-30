@@ -111,3 +111,54 @@ impl Collector {
         self.pending.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_copies_and_releases_after_the_delay() {
+        let mut c = Collector::new();
+        c.add(1, 10.0, b"abc", 100.000);
+        c.add(2, 10.1, b"abc", 100.010);
+        c.add(3, 10.2, b"abc", 100.020);
+        assert!(c.take_due(100.5).is_empty());
+        assert_eq!(c.next_due(), Some(100.9));
+        let g = c.take_due(100.9);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].1.copies.len(), 3);
+        assert_eq!(g[0].1.receivers, vec![1, 2, 3]);
+        assert_eq!(g[0].1.first_seen, 100.0);
+        assert_eq!(g[0].0, 100.9);
+        assert_eq!(c.pending(), 0);
+    }
+
+    #[test]
+    fn cohorts_open_after_50ms_and_after_26_groups() {
+        let mut c = Collector::new();
+        c.add(1, 0.0, b"a", 10.00);
+        c.add(1, 0.0, b"b", 10.04); // same cohort as "a"
+        c.add(1, 0.0, b"c", 10.06); // more than 50 ms after the cohort opened: new cohort
+        assert_eq!(c.take_due(10.9).len(), 2);
+        assert_eq!(c.take_due(10.96).len(), 1);
+
+        let mut c = Collector::new();
+        for i in 0..30u8 {
+            c.add(1, 0.0, &[i], 20.0 + i as f64 * 1e-4);
+        }
+        // 26 groups fit in the first cohort; the 27th opens another
+        assert_eq!(c.take_due(20.9 + 0.001).len(), 26);
+        assert_eq!(c.take_due(21.0).len(), 4);
+    }
+
+    #[test]
+    fn copies_beyond_the_limit_only_add_receivers() {
+        let mut c = Collector::new();
+        for uid in 0..20u32 {
+            c.add(uid, 0.0, b"x", 5.0);
+        }
+        let g = c.take_due(6.0).pop().unwrap().1;
+        assert_eq!(g.copies.len(), MAX_GROUP + 1);
+        assert_eq!(g.receivers.len(), 20);
+    }
+}

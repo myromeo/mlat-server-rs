@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mlat-proto", "crates/mlat-core", "crates/mlat-server"]
+members = ["crates/mlat-proto", "crates/mlat-core", "crates/mlat-server", "crates/mlat-tools"]
 
 [workspace.package]
 edition = "2021"

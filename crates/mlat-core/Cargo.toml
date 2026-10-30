@@ -13,3 +13,7 @@ glibc-pow = []
 [dependencies]
 ahash = "0.8"
 crossbeam-channel = "0.5"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

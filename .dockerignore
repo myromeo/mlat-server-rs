@@ -6,3 +6,5 @@ work*
 .env
 *.pcap
 *.jsonl
+**/tests
+**/examples

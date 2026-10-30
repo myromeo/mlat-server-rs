@@ -1,0 +1,31 @@
+[package]
+name = "mlat-tools"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "mlat_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mlat-capture"
+path = "src/main.rs"
+
+[[bin]]
+name = "pipebench"
+path = "src/bin/pipebench.rs"
+
+[[bin]]
+name = "syncbench"
+path = "src/bin/syncbench.rs"
+
+[dependencies]
+mlat-proto = { path = "../mlat-proto" }
+mlat-core = { path = "../mlat-core" }
+libc = "0.2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tokio = { version = "1", features = ["full"] }

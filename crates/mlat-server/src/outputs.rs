@@ -166,3 +166,31 @@ impl Pseudorange {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting() {
+        assert_eq!(csv_quote(None), "");
+        assert_eq!(csv_quote(Some("BAW1")), "BAW1");
+        assert_eq!(csv_quote(Some("a,b")), "\"a,b\"");
+        assert_eq!(csv_quote(Some("say \"hi\"")), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn rotation_keeps_backups() {
+        let dir = std::env::temp_dir().join(format!("mlat-rot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pos.csv");
+        let mut r = Rotating::open(path.clone()).unwrap();
+        let line = "x".repeat(1000);
+        for _ in 0..3000 {
+            r.write_line(&line);
+        }
+        assert!(dir.join("pos.csv.1").exists() && dir.join("pos.csv.2").exists());
+        assert!(std::fs::metadata(&path).unwrap().len() < Rotating::MAX);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
