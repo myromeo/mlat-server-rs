@@ -376,7 +376,6 @@ struct SyncPoint {
 }
 
 struct Details {
-    address: u32,
     pos_a: [f64; 3],
     pos_b: [f64; 3],
     ac: Arc<AcShared>,
@@ -663,7 +662,7 @@ impl Matcher {
         }
 
         let (pos_a, pos_b) = if m.et < m.ot { (even_ecef, odd_ecef) } else { (odd_ecef, even_ecef) };
-        let details = Details { address: even.address, pos_a, pos_b, ac: ac_shared };
+        let details = Details { pos_a, pos_b, ac: ac_shared };
 
         self.stats.syncpoints_created.fetch_add(1, Ordering::Relaxed);
         let mut sp = SyncPoint { interval, receivers: Vec::new() };
@@ -726,7 +725,6 @@ fn add_to_existing(
         let _ = pairers[shard].send(PairMsg::Update { from, seq, u });
     }
 
-    let _ = details.address;
     sp.receivers.push(SyncRecv { recv: r0.clone(), td: td0b, i: i0 });
 }
 

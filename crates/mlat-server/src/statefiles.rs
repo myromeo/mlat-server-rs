@@ -159,7 +159,7 @@ pub fn write_state(server: &Server, health: &HealthReport, interest: &InterestSn
                 "bad_sync_timeout": (bad * 15.0 / 0.1).round_ties_even() as i64,
                 "outlier_percent": round_dec(recv.outlier_percent_rolling.load(), 1),
             }});
-            let _ = c.tx.send(stats.to_string().into());
+            c.send(stats.to_string().into());
         }
     }
 

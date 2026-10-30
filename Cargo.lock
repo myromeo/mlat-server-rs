@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "mlat-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "crossbeam-channel",
@@ -298,14 +298,14 @@ dependencies = [
 
 [[package]]
 name = "mlat-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "mlat-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "crossbeam-channel",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "mlat-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",

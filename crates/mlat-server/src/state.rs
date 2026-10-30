@@ -8,12 +8,61 @@ use mlat_core::engine::Engine;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use tokio::sync::{mpsc::UnboundedSender, Notify};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, Notify};
 
 /// A line to send to a client (without the newline).
 pub type Line = Arc<str>;
+
+/// Lines queued for one receiver (about 2 MB of results) before it counts as stalled.
+pub const CLIENT_QUEUE: usize = 8192;
+/// Lines queued for one Basestation peer (about 5 MB) before it is dropped.
+pub const SBS_QUEUE: usize = 32768;
+/// How long one write to a peer may take before the peer counts as gone.
+pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `--trusted-proxy`: an address range whose `PROXY` lines are believed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cidr {
+    net: IpAddr,
+    bits: u8,
+}
+
+impl Cidr {
+    /// `a.b.c.d`, `a.b.c.d/n`, `x:y::z` or `x:y::z/n`.
+    pub fn parse(s: &str) -> Result<Cidr, String> {
+        let bad = || format!("'{s}' is not an address or address/prefix");
+        let (addr, bits) = match s.split_once('/') {
+            Some((a, b)) => (a, Some(b.parse::<u8>().map_err(|_| bad())?)),
+            None => (s, None),
+        };
+        let net: IpAddr = addr.parse().map_err(|_| bad())?;
+        let max = if net.is_ipv4() { 32 } else { 128 };
+        let bits = bits.unwrap_or(max);
+        if bits > max {
+            return Err(bad());
+        }
+        Ok(Cidr { net, bits })
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let mask = |bits: u8, width: u32| if bits == 0 { 0 } else { u128::MAX << (width - bits as u32) };
+        match (self.net, ip.to_canonical()) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                let m = mask(self.bits, 32) as u32;
+                u32::from(n) & m == u32::from(a) & m
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                let m = mask(self.bits, 128);
+                u128::from(n) & m == u128::from(a) & m
+            }
+            _ => false,
+        }
+    }
+}
 
 pub struct Config {
     pub work_dir: PathBuf,
@@ -24,6 +73,8 @@ pub struct Config {
     pub partition: (u32, u32),
     /// Write aircraft.json (about 1 MB every 15 s); nothing in the stack needs to read it.
     pub aircraft_json: bool,
+    /// Peers allowed to send a `PROXY` line; empty means none.
+    pub trusted_proxies: Vec<Cidr>,
 }
 
 /// One connected receiver.
@@ -45,16 +96,34 @@ pub struct ConnInfo {
     pub return_results: bool,
     pub result_format_ecef: bool,
     pub return_stats: bool,
-    pub tx: UnboundedSender<Line>,
+    pub tx: mpsc::Sender<Line>,
     pub msg_counter: AtomicU64,
     pub last_msg: AtomicF64,
     pub close: Notify,
+    /// Set once the connection has been told to close because it stopped taking data.
+    pub closing: AtomicBool,
     /// Key of this receiver in the UDP table, if it uses the UDP transport.
     pub udp_key: Option<u32>,
 }
 
+impl ConnInfo {
+    /// Queues a line for the receiver. A receiver whose queue is full (it has
+    /// stopped reading) or whose writer has gone is disconnected.
+    pub fn send(&self, line: Line) {
+        let reason = match self.tx.try_send(line) {
+            Ok(()) => return,
+            Err(TrySendError::Full(_)) => "Send queue full, closing connection",
+            Err(TrySendError::Closed(_)) => "Write failed, closing connection",
+        };
+        if !self.closing.swap(true, Ordering::Relaxed) {
+            log("client", &format!("[{}:{}] {reason}", self.source_ip, self.source_port));
+            self.close.notify_one();
+        }
+    }
+}
+
 pub struct SbsClient {
-    pub tx: UnboundedSender<Line>,
+    pub tx: mpsc::Sender<Line>,
     /// True for the filtered (Kalman-smoothed) listener.
     pub filtered: bool,
 }
@@ -88,7 +157,7 @@ impl Server {
 
     pub fn send_to(&self, uid: u32, line: Line) {
         if let Some(c) = self.conns.read().unwrap().get(&uid) {
-            let _ = c.tx.send(line);
+            c.send(line);
         }
     }
 
@@ -158,5 +227,26 @@ impl Rng {
             idx.swap(i, j);
         }
         idx[..k].iter().map(|&i| v[i].clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cidr_matching() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let c = Cidr::parse("10.1.0.0/16").unwrap();
+        assert!(c.contains(ip("10.1.200.3")));
+        assert!(!c.contains(ip("10.2.0.1")));
+        assert!(c.contains(ip("::ffff:10.1.0.9")), "IPv4-mapped peers match IPv4 ranges");
+        assert!(Cidr::parse("192.0.2.7").unwrap().contains(ip("192.0.2.7")));
+        assert!(!Cidr::parse("192.0.2.7").unwrap().contains(ip("192.0.2.8")));
+        assert!(Cidr::parse("0.0.0.0/0").unwrap().contains(ip("203.0.113.1")));
+        assert!(Cidr::parse("fd00::/8").unwrap().contains(ip("fd12::1")));
+        assert!(!Cidr::parse("fd00::/8").unwrap().contains(ip("10.0.0.1")));
+        assert!(Cidr::parse("10.0.0.0/33").is_err());
+        assert!(Cidr::parse("nonsense").is_err());
     }
 }

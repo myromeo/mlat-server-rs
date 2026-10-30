@@ -140,11 +140,11 @@ impl Pseudorange {
 
     pub fn write(&self, r: &MlatResult) {
         let r0 = |x: f64| json!(x.round_ties_even());
-        let t0 = r.cluster_meas.first().map_or(0.0, |m| m.1);
+        let t0 = r.cluster_meas.first().map_or(0.0, |m| m.timestamp);
         let cluster: Vec<Value> = r
             .cluster_meas
             .iter()
-            .map(|(pos, ts, var)| json!([r0(pos[0]), r0(pos[1]), r0(pos[2]), round_dec((ts - t0) * 1e6, 1), round_dec(var * 1e12, 2)]))
+            .map(|m| json!([r0(m.pos[0]), r0(m.pos[1]), r0(m.pos[2]), round_dec((m.timestamp - t0) * 1e6, 1), round_dec(m.variance * 1e12, 2)]))
             .collect();
         let mut s = Map::new();
         s.insert("icao".into(), json!(format!("{:06x}", r.address)));

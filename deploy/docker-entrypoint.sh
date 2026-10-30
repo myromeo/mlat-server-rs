@@ -22,6 +22,7 @@ add_each --basestation-listen "${MLAT_UNFILTERED_LISTEN:-}"
 add_each --filtered-basestation-connect "${MLAT_FILTERED_CONNECT:-}"
 add_each --basestation-connect "${MLAT_UNFILTERED_CONNECT:-}"
 add_each --write-csv "${MLAT_WRITE_CSV:-}"
+add_each --trusted-proxy "${MLAT_TRUSTED_PROXY:-}"
 
 [ -n "${MLAT_PARTITION:-}" ] && args="$args --partition $MLAT_PARTITION"
 [ -n "${MLAT_STATUS_INTERVAL:-}" ] && args="$args --status-interval $MLAT_STATUS_INTERVAL"

@@ -1,19 +1,19 @@
 //! One client connection: handshake, framing, message dispatch.
 
 use crate::interest::InterestMsg;
-use crate::state::{log, now, ConnInfo, Line, Rng, Server};
+use crate::state::{log, now, ConnInfo, Line, Rng, Server, CLIENT_QUEUE, WRITE_TIMEOUT};
 use mlat_core::atomic::AtomicF64;
 use mlat_core::pairing::round_dec;
 use mlat_proto::{CompressMode, FrameEncoder, LineDecoder};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::mpsc::{channel, Receiver as LineRx, Sender as LineTx};
 use tokio::sync::Notify;
 use tokio::time::{sleep_until, timeout, Instant};
 
@@ -91,12 +91,12 @@ fn parse_handshake(line: &str, rng: &mut Rng) -> Result<Handshake, String> {
     if !(-90.0..=90.0).contains(&lat) {
         return Err("Bad values in handshake: invalid latitude, should be -90 .. 90".into());
     }
-    let mut lon = num("lon")?;
-    if !(-180.0..=360.0).contains(&lon) {
-        return Err("Bad values in handshake: invalid longitude, should be -180 .. 360".into());
-    }
-    if lon > 180.0 {
-        lon -= 180.0;
+    // The Python server accepts up to 360 and converts (older versions subtracted 180,
+    // misplacing the receiver; current ones subtract 360). No known client sends values
+    // above 180, so anything outside -180 .. 180 is rejected instead.
+    let lon = num("lon")?;
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err("Bad values in handshake: invalid longitude, should be -180 .. 180".into());
     }
     let alt = num("alt")?;
     if !(-1000.0..=10000.0).contains(&alt) {
@@ -143,9 +143,15 @@ async fn deny(wr: &mut OwnedWriteHalf, reason: &str, rng: &mut Rng) {
     let _ = wr.write_all(format!("{msg}\n").as_bytes()).await;
 }
 
+/// Writes `buf` to the peer; false if that fails or takes longer than `WRITE_TIMEOUT`.
+pub async fn write_timed(wr: &mut (impl AsyncWriteExt + Unpin), buf: &[u8]) -> bool {
+    matches!(timeout(WRITE_TIMEOUT, wr.write_all(buf)).await, Ok(Ok(())))
+}
+
 /// Sends queued lines to the client: zlib frames flushed once a second for
-/// `zlib2`, plain lines otherwise.
-async fn writer(mut wr: OwnedWriteHalf, mut rx: UnboundedReceiver<Line>, mode: CompressMode) {
+/// `zlib2`, plain lines otherwise. Returns when the peer stops taking data,
+/// which makes the next `ConnInfo::send` close the connection.
+async fn writer(mut wr: OwnedWriteHalf, mut rx: LineRx<Line>, mode: CompressMode) {
     if mode != CompressMode::Zlib2 {
         while let Some(first) = rx.recv().await {
             let mut out = Vec::with_capacity(256);
@@ -155,7 +161,7 @@ async fn writer(mut wr: OwnedWriteHalf, mut rx: UnboundedReceiver<Line>, mode: C
                 out.extend_from_slice(more.as_bytes());
                 out.push(b'\n');
             }
-            if wr.write_all(&out).await.is_err() {
+            if !write_timed(&mut wr, &out).await {
                 return;
             }
         }
@@ -194,7 +200,7 @@ async fn writer(mut wr: OwnedWriteHalf, mut rx: UnboundedReceiver<Line>, mode: C
                     start = end;
                 }
                 pending.clear();
-                if wr.write_all(&out).await.is_err() {
+                if !write_timed(&mut wr, &out).await {
                     return;
                 }
             }
@@ -284,12 +290,14 @@ fn process_line(server: &Server, c: &ConnInfo, line: &str, now: f64) {
     };
     c.msg_counter.fetch_add(1, Ordering::Relaxed);
     let Some(obj) = v.as_object() else { return };
+    // a sync or mlat message missing a field is dropped, as the Python server's KeyError drops it
     if let Some(s) = obj.get("sync") {
         let (Some(em), Some(om)) = (s["em"].as_str().and_then(hex_array::<14>), s["om"].as_str().and_then(hex_array::<14>)) else { return };
-        e.sync(now, c.uid, s["et"].as_f64().unwrap_or(0.0), s["ot"].as_f64().unwrap_or(0.0), em, om);
+        let (Some(et), Some(ot)) = (s["et"].as_f64(), s["ot"].as_f64()) else { return };
+        e.sync(now, c.uid, et, ot, em, om);
     } else if let Some(m) = obj.get("mlat") {
-        if let Some(msg) = m["m"].as_str().and_then(parse_hex) {
-            e.mlat(now, c.uid, m["t"].as_f64().unwrap_or(0.0), msg);
+        if let (Some(msg), Some(t)) = (m["m"].as_str().and_then(parse_hex), m["t"].as_f64()) {
+            e.mlat(now, c.uid, t, msg);
         }
     } else if let Some(s) = obj.get("seen") {
         let icaos = icao_list(s);
@@ -323,7 +331,7 @@ fn process_line(server: &Server, c: &ConnInfo, line: &str, now: f64) {
 fn register(
     server: &Arc<Server>,
     hs: &Handshake,
-    tx: tokio::sync::mpsc::UnboundedSender<Line>,
+    tx: LineTx<Line>,
     use_udp: bool,
     source_ip: &str,
     source_port: &str,
@@ -397,6 +405,7 @@ fn register(
         msg_counter: AtomicU64::new(0),
         last_msg: AtomicF64::new(now()),
         close: Notify::new(),
+        closing: AtomicBool::new(false),
         udp_key,
     });
     server.conns.write().unwrap().insert(uid, conn.clone());
@@ -423,6 +432,11 @@ pub async fn handle(server: Arc<Server>, stream: TcpStream, peer: SocketAddr, ud
             let text = String::from_utf8_lossy(&raw[..raw.len() - 1]).into_owned();
             if text.starts_with("PROXY ") && !proxied {
                 proxied = true;
+                // only a configured proxy may say where the connection really comes from
+                if !server.cfg.trusted_proxies.iter().any(|c| c.contains(peer.ip())) {
+                    log("client", &format!("[{source_ip}:{source_port}] PROXY line from an untrusted peer, closing connection"));
+                    return;
+                }
                 let p: Vec<&str> = text.split(' ').collect();
                 if p.len() > 4 {
                     source_ip = p[2].to_string();
@@ -452,7 +466,7 @@ pub async fn handle(server: Arc<Server>, stream: TcpStream, peer: SocketAddr, ud
     };
 
     // ---- register the receiver (user names are unique)
-    let (tx, rx) = unbounded_channel::<Line>();
+    let (tx, rx) = channel::<Line>(CLIENT_QUEUE);
     let use_udp = udp.is_some() && hs.udp_transport == 2;
     let (conn, user) = match register(&server, &hs, tx, use_udp, &source_ip, &source_port, &mut rng) {
         Ok(v) => v,

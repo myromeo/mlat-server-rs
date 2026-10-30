@@ -77,13 +77,13 @@ Every option of `mlat-server` is accepted:
 | `--work-dir DIR`, `--motd`, `--status-interval`, `--tag` | as the original (`--tag` is accepted and unused) |
 | `--check-leaks` | accepted, does nothing (it is a Python memory diagnostic) |
 
-Added: `--source-url URL` (the AGPL source location sent to receivers; set it to where this repository is), `--engine-threads N`, `--io-threads N`, `--no-aircraft-json`.
+Added: `--source-url URL` (the AGPL source location sent to receivers; set it to where this repository is), `--engine-threads N`, `--io-threads N`, `--no-aircraft-json`, `--trusted-proxy ADDR[/PREFIX]` (repeatable or comma-separated; see below).
 
 No port numbers are fixed in either program; the usual 31090 (receivers) and 31003 (filtered Basestation) work unchanged.
 
 ### Receiver protocol
 
-Handshake versions 2 and 3, compression `zlib2` / `zlib` / `none`, the optional `PROXY` line, the UDP transport (`udp_transport: 2`, same packed datagram format and key), and the message types `sync`, `mlat`, `seen`, `lost`, `rate_report`, `input_connected`, `input_disconnected`, `clock_reset`, `clock_jump` and `heartbeat`. Results go back in both the `old` and `ecef` formats, with `return_stats`. Tested against recorded traffic from about 140 real receivers running mlat-client 0.4.2; other client versions have not been tested.
+Handshake versions 2 and 3, compression `zlib2` / `zlib` / `none`, the optional `PROXY` line (from `--trusted-proxy` peers only), the UDP transport (`udp_transport: 2`, same packed datagram format and key), and the message types `sync`, `mlat`, `seen`, `lost`, `rate_report`, `input_connected`, `input_disconnected`, `clock_reset`, `clock_jump` and `heartbeat`. Results go back in both the `old` and `ecef` formats, with `return_stats`. Tested against recorded traffic from about 140 real receivers running mlat-client 0.4.2; other client versions have not been tested.
 
 ### Output
 
@@ -96,6 +96,9 @@ Handshake versions 2 and 3, compression `zlib2` / `zlib` / `none`, the optional 
 * The order of peers in `sync.json` / `bad_peer_list` and of the interest lists follows receiver id, not hash or insertion order.
 * `aircraft.json` `elapsed_seen` is larger for aircraft that only appear in rate reports.
 * The `quine` debugging message and the `MLAT_CPU_PROFILE` hook of mlat.uk's build are not implemented.
+* **`PROXY` lines** are only accepted from peers listed with `--trusted-proxy` (`MLAT_TRUSTED_PROXY` in Docker). Any other connection that starts with one is closed. The original believes a `PROXY` line from anyone, so any client could choose the source address shown in logs and state files.
+* **Longitudes outside -180..180** in the handshake are rejected. The original accepts up to 360: older versions subtracted 180, which put such a receiver in the wrong place (200° became 20° E instead of 160° W); wiedehopf's current version subtracts 360. No known client sends values above 180.
+* **Stalled peers are disconnected.** A receiver with more than 8,192 lines waiting, or a Basestation consumer with more than 32,768, is disconnected, as is any peer that takes over 30 s to accept one write. The original keeps buffering without limit.
 * Datagrams on the UDP transport are authenticated only by the key the receiver was given and, as in the original, bypass the "no mlat from a receiver with bad sync" check that the TCP path has.
 
 ## Running

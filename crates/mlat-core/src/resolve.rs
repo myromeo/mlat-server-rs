@@ -11,6 +11,7 @@ use crate::normalize::{Normalised, ReceiverStamps};
 use crate::receiver::Receiver;
 use crate::solver::{solve, Measurement, MAX_ALT, MIN_ALT};
 use crate::FTOM;
+use ahash::AHashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -133,8 +134,8 @@ pub struct MlatResult {
     pub last_altitude_time: Option<f64>,
     pub vrate: Option<i32>,
     pub vrate_time: Option<f64>,
-    /// The solver's inputs, for `--dump-pseudorange`: (receiver position, timestamp, variance).
-    pub cluster_meas: Vec<([f64; 3], f64, f64)>,
+    /// The solver's inputs, for `--dump-pseudorange`.
+    pub cluster_meas: Vec<Measurement>,
     /// The altitude constraint used (metres) and its error.
     pub solve_altitude: Option<f64>,
     pub solve_altitude_error: Option<f64>,
@@ -258,7 +259,7 @@ pub fn resolve(
 
     // receiver -> timestamps, in order of first appearance
     let mut order: Vec<u32> = Vec::new();
-    let mut by_receiver: HashMap<u32, Vec<(f64, f64)>> = HashMap::new();
+    let mut by_receiver: AHashMap<u32, Vec<(f64, f64)>> = AHashMap::new();
     for &(uid, ts, utc) in &group.copies {
         by_receiver.entry(uid).or_insert_with(|| {
             order.push(uid);
@@ -280,7 +281,7 @@ pub fn resolve(
     let mut stamps = Vec::with_capacity(order.len());
     for &uid in &order {
         let r = env.receiver(uid)?;
-        stamps.push(ReceiverStamps { uid, freq: r.clock.freq, jitter: r.clock.jitter, stamps: by_receiver[&uid].clone() });
+        stamps.push(ReceiverStamps { uid, freq: r.clock.freq, jitter: r.clock.jitter, stamps: by_receiver.remove(&uid).unwrap_or_default() });
     }
     let components = env.normalize(&stamps, now);
 
@@ -292,12 +293,9 @@ pub fn resolve(
     };
 
     let min_component_size = (4 - altitude_dof) as usize;
-    let mut clusters: Vec<Cluster> = Vec::new();
-    for component in &components_as_slice(&components) {
-        if component.len() >= min_component_size {
-            clusters.extend(cluster_timestamps(component, min_component_size, &distance));
-        }
-    }
+    // normalize2 returns the single biggest component (or nothing)
+    let mut clusters: Vec<Cluster> =
+        if components.len() >= min_component_size { cluster_timestamps(&components, min_component_size, &distance) } else { Vec::new() };
     if clusters.is_empty() {
         return None;
     }
@@ -305,7 +303,8 @@ pub fn resolve(
     // start from the most recent, largest, cluster
     clusters.sort_by(|a, b| a.distinct.cmp(&b.distinct).then(a.first_seen.partial_cmp(&b.first_seen).unwrap()));
 
-    let mut accepted: Option<(Cluster, [f64; 3], [[f64; 3]; 3], f64, i64, i32, f64, Option<f64>)> = None;
+    #[allow(clippy::type_complexity)]
+    let mut accepted: Option<(Cluster, Vec<Measurement>, [f64; 3], [[f64; 3]; 3], f64, i64, i32, f64, Option<f64>)> = None;
     while accepted.is_none() {
         let Some(mut cluster) = clusters.pop() else { break };
         let cluster_utc = cluster.first_seen;
@@ -360,10 +359,10 @@ pub fn resolve(
         }
         stats.solve_used += 1;
 
-        accepted = Some((cluster, ecef, cov, var_est, error, dof, cluster_utc, altitude_error));
+        accepted = Some((cluster, meas, ecef, cov, var_est, error, dof, cluster_utc, altitude_error));
     }
 
-    let (cluster, mut ecef, ecef_cov, var_est, error, dof, cluster_utc, altitude_error) = accepted?;
+    let (cluster, meas, mut ecef, ecef_cov, var_est, error, dof, cluster_utc, altitude_error) = accepted?;
     let distinct = cluster.distinct;
 
     ac.last_result_position = Some(ecef);
@@ -377,12 +376,6 @@ pub fn resolve(
         ac.last_force_mlat = now;
         ac.force_mlat = false;
     }
-
-    let meas: Vec<Measurement> = cluster
-        .members
-        .iter()
-        .map(|m| Measurement { pos: env.receiver(m.uid).map(|r| r.pos).unwrap_or([0.0; 3]), timestamp: m.timestamp, variance: m.variance })
-        .collect();
 
     if let Some(alt) = altitude {
         let [lat, lon, _] = ecef2llh(&ecef);
@@ -415,17 +408,8 @@ pub fn resolve(
         last_altitude_time: ac.last_altitude_time,
         vrate: ac.vrate,
         vrate_time: ac.vrate_time,
-        cluster_meas: meas.iter().map(|m| (m.pos, m.timestamp, m.variance)).collect(),
+        cluster_meas: meas,
         solve_altitude: altitude,
         solve_altitude_error: altitude.and(altitude_error),
     })
-}
-
-/// `normalize2` returns the single biggest component (or nothing).
-fn components_as_slice(c: &[Normalised]) -> Vec<&[Normalised]> {
-    if c.is_empty() {
-        Vec::new()
-    } else {
-        vec![c]
-    }
 }

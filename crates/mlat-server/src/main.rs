@@ -12,13 +12,13 @@ mod udp;
 use crossbeam_channel::unbounded;
 use mlat_core::engine::Engine;
 use conn::UdpAdvert;
-use state::{log, now, Config, Line, SbsClient, Server};
+use state::{log, now, Cidr, Config, Line, SbsClient, Server, SBS_QUEUE};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 
 const HELP: &str = "usage: mlat-server-rs --work-dir DIR [--client-listen [host:]tcp_port[:udp_port]]...
                       [--filtered-basestation-listen [host:]port]... [--basestation-listen [host:]port]...
@@ -26,6 +26,7 @@ const HELP: &str = "usage: mlat-server-rs --work-dir DIR [--client-listen [host:
                       [--write-csv FILE]... [--dump-pseudorange FILE] [--partition I/N]
                       [--motd TEXT] [--status-interval SECONDS] [--engine-threads N] [--io-threads N]
                       [--source-url URL] [--tag NAME] [--no-aircraft-json] [--check-leaks]
+                      [--trusted-proxy ADDR[/PREFIX]]...
 
 Multilateration server, wire-compatible with the Python mlat-server.";
 
@@ -47,6 +48,7 @@ struct Args {
     engine_threads: usize,
     io_threads: usize,
     source_url: String,
+    trusted_proxies: Vec<Cidr>,
 }
 
 fn port(s: &str, whole: &str) -> Result<u16, String> {
@@ -112,6 +114,7 @@ fn parse_args() -> Result<Args, String> {
         engine_threads: 1,
         io_threads: 0,
         source_url: "https://github.com/myromeo/mlat-server".into(),
+        trusted_proxies: Vec::new(),
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -148,6 +151,12 @@ fn parse_args() -> Result<Args, String> {
             "--engine-threads" => a.engine_threads = value(&mut i)?.parse().map_err(|_| "bad --engine-threads")?,
             "--io-threads" => a.io_threads = value(&mut i)?.parse().map_err(|_| "bad --io-threads")?,
             "--source-url" => a.source_url = value(&mut i)?,
+            // may be repeated, or given as a comma-separated list
+            "--trusted-proxy" => {
+                for c in value(&mut i)?.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+                    a.trusted_proxies.push(Cidr::parse(c)?);
+                }
+            }
             "--tag" => {
                 value(&mut i)?;
             }
@@ -238,7 +247,7 @@ async fn serve_clients(server: Arc<Server>, host: Option<String>, tcp_port: u16,
 
 /// Sends results to one Basestation peer until it goes away (`BasestationClient`).
 async fn sbs_session(server: Arc<Server>, stream: TcpStream, peer: SocketAddr, filtered: bool) {
-    let (tx, mut rx) = unbounded_channel::<Line>();
+    let (tx, mut rx) = channel::<Line>(SBS_QUEUE);
     server.sbs_clients.lock().unwrap().push(SbsClient { tx, filtered });
     log("basestation", &format!("[{peer}] Connection established"));
     let (mut rd, mut wr) = stream.into_split();
@@ -247,13 +256,13 @@ async fn sbs_session(server: Arc<Server>, stream: TcpStream, peer: SocketAddr, f
         loop {
             match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
                 Ok(Some(l)) => {
-                    if wr.write_all(l.as_bytes()).await.is_err() {
+                    if !conn::write_timed(&mut wr, l.as_bytes()).await {
                         break;
                     }
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    if wr.write_all(b"\n").await.is_err() {
+                    if !conn::write_timed(&mut wr, b"\n").await {
                         break;
                     }
                 }
@@ -294,25 +303,23 @@ async fn connect_sbs(server: Arc<Server>, host: String, port: u16, filtered: boo
     }
 }
 
-/// What the 15 s health pass hands to the state-file writer.
-struct StateJob {
-    health: mlat_core::engine::HealthReport,
-    snapshot: interest::InterestSnapshot,
-    t: f64,
-}
-
-/// Builds and writes the state files and the status line, off the clock thread, so a slow
-/// disk or a large aircraft table cannot delay group deadlines.
-fn state_thread(server: Arc<Server>, rx: crossbeam_channel::Receiver<StateJob>) {
+/// Runs the 15 s health evaluation and writes the state files and the status line, off
+/// the clock thread, so waiting on the workers, a slow disk or a large aircraft table
+/// cannot delay group deadlines. Receives the time of each evaluation.
+fn state_thread(server: Arc<Server>, rx: crossbeam_channel::Receiver<f64>) {
     let mut status = statefiles::StatusState { next_status: now() + server.cfg.status_interval, last_cpu: 0.0 };
-    for job in rx {
-        statefiles::write_state(&server, &job.health, &job.snapshot, job.t, &mut status);
+    for t in rx {
+        let health = server.engine.health(t);
+        let (tx, snap_rx) = unbounded();
+        let _ = server.interest.send(interest::InterestMsg::Snapshot { reply: tx });
+        let snapshot = snap_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+        statefiles::write_state(&server, &health, &snapshot, t, &mut status);
     }
 }
 
 /// Drives everything time-based: group-collection deadlines, pairing cleanup,
 /// the 15 s state evaluation and the heartbeats.
-fn clock_thread(server: Arc<Server>, state_tx: crossbeam_channel::Sender<StateJob>) {
+fn clock_thread(server: Arc<Server>, state_tx: crossbeam_channel::Sender<f64>) {
     let start = now();
     let mut next_cleanup = start + 1.0;
     let mut next_15 = start;
@@ -333,11 +340,10 @@ fn clock_thread(server: Arc<Server>, state_tx: crossbeam_channel::Sender<StateJo
             next_cleanup += 10.0;
         }
         if t >= next_15 {
-            let health = server.engine.health(t);
-            let (tx, rx) = unbounded();
-            let _ = server.interest.send(interest::InterestMsg::Snapshot { reply: tx });
-            let snapshot = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-            let _ = state_tx.send(StateJob { health, snapshot, t });
+            // skipped, not queued, if the previous evaluation is still running
+            if state_tx.try_send(t).is_err() {
+                log("coordinator", "state evaluation still running, skipping this one");
+            }
             server.engine.clear_sync_points();
             next_15 += 15.0;
         }
@@ -349,7 +355,7 @@ fn clock_thread(server: Arc<Server>, state_tx: crossbeam_channel::Sender<StateJo
                     log("client", &format!("[{}:{}] No recent messages seen, closing connection", c.source_ip, c.source_port));
                     c.close.notify_one();
                 } else {
-                    let _ = c.tx.send(beat.clone());
+                    c.send(beat.clone());
                 }
             }
         }
@@ -374,7 +380,7 @@ fn main() {
     let (itx, irx) = unbounded();
     let server = Arc::new(Server::new(
         engine,
-        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition, aircraft_json: args.aircraft_json },
+        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition, aircraft_json: args.aircraft_json, trusted_proxies: args.trusted_proxies.clone() },
         itx,
     ));
 
@@ -410,7 +416,7 @@ fn main() {
         std::thread::Builder::new().name("interest".into()).spawn(move || interest::run(s, irx)).unwrap();
         let s = server.clone();
         std::thread::Builder::new().name("results".into()).spawn(move || results::run(s, outs)).unwrap();
-        let (state_tx, state_rx) = unbounded();
+        let (state_tx, state_rx) = crossbeam_channel::bounded(1);
         let s = server.clone();
         std::thread::Builder::new().name("state".into()).spawn(move || state_thread(s, state_rx)).unwrap();
         let s = server.clone();

@@ -25,6 +25,7 @@ fn normalize2_matches_python() {
         .unwrap_or_else(|_| format!("{}/Downloads/baseline/rec1/rec", std::env::var("HOME").unwrap_or_default()));
     let path = format!("{dir}/normalize2.jsonl");
     if !std::path::Path::new(&path).exists() {
+        assert!(std::env::var_os("MLAT_REQUIRE_GOLDEN").is_none(), "MLAT_REQUIRE_GOLDEN is set but the recordings are missing");
         eprintln!("no recordings, skipping");
         return;
     }

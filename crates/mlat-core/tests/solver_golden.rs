@@ -50,6 +50,7 @@ fn pct(v: &mut Vec<f64>, q: f64) -> f64 {
 #[test]
 fn leastsq_matches_scipy() {
     let Some(dir) = rec_dir() else {
+        assert!(std::env::var_os("MLAT_REQUIRE_GOLDEN").is_none(), "MLAT_REQUIRE_GOLDEN is set but the recordings are missing");
         eprintln!("no recordings, skipping");
         return;
     };
@@ -140,6 +141,7 @@ fn leastsq_matches_scipy() {
 #[test]
 fn solve_matches_python() {
     let Some(dir) = rec_dir() else {
+        assert!(std::env::var_os("MLAT_REQUIRE_GOLDEN").is_none(), "MLAT_REQUIRE_GOLDEN is set but the recordings are missing");
         eprintln!("no recordings, skipping");
         return;
     };

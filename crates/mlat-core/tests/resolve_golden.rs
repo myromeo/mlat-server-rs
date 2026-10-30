@@ -184,6 +184,7 @@ fn resolve_matches_python() {
         .unwrap_or_else(|_| format!("{}/Downloads/baseline/rec2/rec", std::env::var("HOME").unwrap_or_default()));
     let path = format!("{dir}/resolve.jsonl");
     if !std::path::Path::new(&path).exists() {
+        assert!(std::env::var_os("MLAT_REQUIRE_GOLDEN").is_none(), "MLAT_REQUIRE_GOLDEN is set but the recordings are missing");
         eprintln!("no recordings, skipping");
         return;
     }

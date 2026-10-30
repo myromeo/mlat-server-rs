@@ -2,7 +2,8 @@
 //! (`report_mlat_position_*`), and to Basestation listeners (`BasestationClient`).
 
 use crate::outputs::Outputs;
-use crate::state::{now, Line, Server};
+use crate::state::{log, now, Line, Server};
+use tokio::sync::mpsc::error::TrySendError;
 use ahash::AHashMap;
 use mlat_core::geodesy::ecef2llh;
 use mlat_core::output::{sbs_line, KalmanView, SbsAircraft, MS_TO_KTS};
@@ -95,7 +96,15 @@ pub fn run(server: Arc<Server>, outs: Outputs) {
                         l.map(Line::from)
                     });
                     match line {
-                        Some(l) => c.tx.send(l.clone()).is_ok(),
+                        // a peer that has stopped reading is dropped
+                        Some(l) => match c.tx.try_send(l.clone()) {
+                            Ok(()) => true,
+                            Err(TrySendError::Full(_)) => {
+                                log("basestation", "Send queue full, dropping connection");
+                                false
+                            }
+                            Err(TrySendError::Closed(_)) => false,
+                        },
                         None => !c.tx.is_closed(),
                     }
                 });
@@ -133,7 +142,7 @@ pub fn run(server: Arc<Server>, outs: Outputs) {
             } else {
                 old_line.get_or_insert_with(|| Line::from(old_message(&r))).clone()
             };
-            let _ = c.tx.send(line);
+            c.send(line);
         }
     }
 }
