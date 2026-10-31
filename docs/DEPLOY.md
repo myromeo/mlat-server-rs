@@ -29,6 +29,10 @@ whatever it is given: connection handling scales with the cores available, and
 `MLAT_ENGINE_THREADS` (default 1) spreads the position engine over more matcher/pairer threads,
 which only matters at several times today's load. Raise `MLAT_CPUS` as stations are added.
 
+The binary is compiled for the CPU of the machine that builds the image (`target-cpu=native`).
+Rebuild after moving to different hardware, or build a portable image with
+`docker compose build --build-arg TARGET_CPU=x86-64-v3` (or `x86-64`, or `generic` on arm64).
+
 ## UDP
 
 Set `MLAT_CLIENT_LISTEN=31090:31090`; the compose file already publishes the UDP port. Receivers

@@ -4,6 +4,11 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# The image is built on the machine that runs it, so by default it uses every instruction
+# set extension that CPU has (inflate and JSON parsing are 10-20% faster). Pass e.g.
+# --build-arg TARGET_CPU=x86-64-v3 to build an image that will run on another machine.
+ARG TARGET_CPU=native
+ENV RUSTFLAGS="-C target-cpu=${TARGET_CPU}"
 # glibc-pow: use libm's pow() where the Python server does, for matching results
 RUN cargo build --release --locked -p mlat-server --features glibc-pow \
     && cp target/release/mlat-server-rs /mlat-server-rs

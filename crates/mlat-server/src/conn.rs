@@ -208,30 +208,51 @@ async fn writer(mut wr: OwnedWriteHalf, mut rx: LineRx<Line>, mode: CompressMode
     }
 }
 
+/// Hex digit values; 0xff marks a byte that is not a hex digit.
+const HEX: [u8; 256] = {
+    let mut t = [0xffu8; 256];
+    let mut i = 0;
+    while i < 10 {
+        t[b'0' as usize + i] = i as u8;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 6 {
+        t[b'a' as usize + i] = 10 + i as u8;
+        t[b'A' as usize + i] = 10 + i as u8;
+        i += 1;
+    }
+    t
+};
+
+/// Decodes `2 * out.len()` hex digits into `out`; false if any is not a hex digit.
+fn hex_into(digits: &[u8], out: &mut [u8]) -> bool {
+    let mut bad = 0u8;
+    for (o, &[h, l]) in out.iter_mut().zip(digits.as_chunks::<2>().0) {
+        let (hi, lo) = (HEX[h as usize], HEX[l as usize]);
+        bad |= hi | lo;
+        *o = hi << 4 | (lo & 0x0f);
+    }
+    bad & 0xf0 == 0
+}
+
 /// Hex text into a fixed-size array (None unless it is exactly 2N digits).
 fn hex_array<const N: usize>(s: &str) -> Option<[u8; N]> {
     let b = s.as_bytes();
     if b.len() != 2 * N {
         return None;
     }
-    let nib = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    };
     let mut out = [0u8; N];
-    for i in 0..N {
-        out[i] = nib(b[2 * i])? << 4 | nib(b[2 * i + 1])?;
-    }
-    Some(out)
+    hex_into(b, &mut out).then_some(out)
 }
 
 fn parse_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len() / 2).map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()).collect()
+    let mut out = vec![0u8; b.len() / 2];
+    hex_into(b, &mut out).then_some(out)
 }
 
 #[derive(serde::Deserialize)]
@@ -543,5 +564,29 @@ fn cleanup(server: &Server, conn: &Arc<ConnInfo>, user: &str) {
     let mut users = server.users.lock().unwrap();
     if users.get(user).map_or(false, |(uid, _)| *uid == conn.uid) {
         users.remove(user);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_decoding() {
+        assert_eq!(parse_hex("8dAbC0"), Some(vec![0x8d, 0xab, 0xc0]));
+        assert_eq!(parse_hex(""), Some(vec![]));
+        assert_eq!(parse_hex("abc"), None);
+        for bad in ["0g", "g0", "0 ", "\u{e9}", "0x"] {
+            assert_eq!(parse_hex(bad), None, "{bad}");
+        }
+        // from_str_radix accepted a sign, and slicing by byte panicked mid-character;
+        // Python's bytes.fromhex rejects both
+        assert_eq!(parse_hex("+1"), None);
+        assert_eq!(parse_hex("a\u{e9}b"), None);
+        let all: String = (0..=255u8).map(|b| format!("{b:02X}")).collect();
+        assert_eq!(parse_hex(&all), Some((0..=255u8).collect()));
+        assert_eq!(hex_array::<2>("ff00"), Some([0xff, 0x00]));
+        assert_eq!(hex_array::<2>("ff0"), None);
+        assert_eq!(hex_array::<2>("ff0z"), None);
     }
 }
