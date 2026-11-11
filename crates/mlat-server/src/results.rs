@@ -70,6 +70,9 @@ pub fn run(server: Arc<Server>, outs: Outputs) {
     let rx = server.engine.results_receiver();
     // per aircraft: the time of the last poor result let through (see sbs_line)
     let mut crappy: AHashMap<u32, f64> = AHashMap::new();
+    let ms = || (now() * 1000.0) as i64;
+    let mut coverage = server.cfg.coverage_json.then(|| crate::coverage::Coverage::new(ms()));
+    let mut next_coverage = 0i64;
 
     while let Ok(r) = rx.recv() {
         // output handlers first: the Basestation listeners
@@ -132,6 +135,19 @@ pub fn run(server: Arc<Server>, outs: Outputs) {
         let mut ecef_line: Option<Line> = None;
         let mut old_line: Option<Line> = None;
         let conns = server.conns.read().unwrap();
+        if let Some(cov) = coverage.as_mut() {
+            let [lat, lon, _] = ecef2llh(&r.ecef);
+            let t = ms();
+            for uid in &r.receivers {
+                if let Some(c) = conns.get(uid).filter(|c| !c.privacy && (c.lat != 0.0 || c.lon != 0.0)) {
+                    cov.add(&c.user, (c.lat, c.lon), r.address, lat, lon, t);
+                }
+            }
+            if t >= next_coverage {
+                next_coverage = t + 60_000;
+                crate::statefiles::write_atomic(server.cfg.work_dir.join("coverage.json"), &cov.json(t));
+            }
+        }
         for uid in &r.group_receivers {
             let Some(c) = conns.get(uid) else { continue };
             if !c.return_results {

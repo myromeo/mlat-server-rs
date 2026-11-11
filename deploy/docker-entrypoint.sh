@@ -30,6 +30,7 @@ add_each --trusted-proxy "${MLAT_TRUSTED_PROXY:-}"
 [ -n "${MLAT_IO_THREADS:-}" ] && args="$args --io-threads $MLAT_IO_THREADS"
 [ -n "${MLAT_SOURCE_URL:-}" ] && args="$args --source-url $MLAT_SOURCE_URL"
 case "${MLAT_AIRCRAFT_JSON:-1}" in 0|false|no|off) args="$args --no-aircraft-json" ;; esac
+case "${MLAT_COVERAGE_JSON:-0}" in 1|true|yes|on) args="$args --coverage-json" ;; esac
 [ -n "${MLAT_DUMP_PSEUDORANGE:-}" ] && args="$args --dump-pseudorange $MLAT_DUMP_PSEUDORANGE"
 
 # the MOTD may contain spaces, so it is passed as a single argument

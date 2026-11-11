@@ -73,6 +73,8 @@ pub struct Config {
     pub partition: (u32, u32),
     /// Write aircraft.json (about 1 MB every 15 s); nothing in the stack needs to read it.
     pub aircraft_json: bool,
+    /// Write coverage.json: per-station MLAT coverage counts (coverage.rs)
+    pub coverage_json: bool,
     /// Peers allowed to send a `PROXY` line; empty means none.
     pub trusted_proxies: Vec<Cidr>,
 }

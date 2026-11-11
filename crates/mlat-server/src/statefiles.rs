@@ -29,7 +29,7 @@ fn bad_syncs_json(x: f64, nd: Option<usize>) -> Value {
 
 /// Writes the file whole, then renames it into place so readers never see half of it.
 /// (Serialised in memory first: straight into the file it is one system call per token.)
-fn write_atomic(path: std::path::PathBuf, v: &Value) {
+pub fn write_atomic(path: std::path::PathBuf, v: &Value) {
     let tmp = path.with_extension("json.tmp");
     let Ok(bytes) = serde_json::to_vec(v) else { return };
     if std::fs::write(&tmp, &bytes).is_ok() {

@@ -2,6 +2,7 @@
 //! mlat-server (wiedehopf's fork) so receivers and readsb need no changes.
 
 mod conn;
+mod coverage;
 mod interest;
 mod outputs;
 mod results;
@@ -25,7 +26,7 @@ const HELP: &str = "usage: mlat-server-rs --work-dir DIR [--client-listen [host:
                       [--filtered-basestation-connect host:port]... [--basestation-connect host:port]...
                       [--write-csv FILE]... [--dump-pseudorange FILE] [--partition I/N]
                       [--motd TEXT] [--status-interval SECONDS] [--engine-threads N] [--io-threads N]
-                      [--source-url URL] [--tag NAME] [--no-aircraft-json] [--check-leaks]
+                      [--source-url URL] [--tag NAME] [--no-aircraft-json] [--coverage-json] [--check-leaks]
                       [--trusted-proxy ADDR[/PREFIX]]...
 
 Multilateration server, wire-compatible with the Python mlat-server.";
@@ -43,6 +44,7 @@ struct Args {
     pseudorange: Option<String>,
     partition: (u32, u32),
     aircraft_json: bool,
+    coverage_json: bool,
     motd: String,
     status_interval: f64,
     engine_threads: usize,
@@ -109,6 +111,7 @@ fn parse_args() -> Result<Args, String> {
         pseudorange: None,
         partition: (1, 1),
         aircraft_json: true,
+        coverage_json: false,
         motd: String::new(),
         status_interval: 15.0,
         engine_threads: 1,
@@ -144,6 +147,7 @@ fn parse_args() -> Result<Args, String> {
             "--write-csv" => a.write_csv.push(value(&mut i)?),
             "--dump-pseudorange" => a.pseudorange = Some(value(&mut i)?),
             "--no-aircraft-json" => a.aircraft_json = false,
+            "--coverage-json" => a.coverage_json = true,
             "--check-leaks" => {} // Python memory-leak diagnostics; nothing to check here
             "--partition" => a.partition = partition(&value(&mut i)?)?,
             "--motd" => a.motd = value(&mut i)?,
@@ -380,7 +384,7 @@ fn main() {
     let (itx, irx) = unbounded();
     let server = Arc::new(Server::new(
         engine,
-        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition, aircraft_json: args.aircraft_json, trusted_proxies: args.trusted_proxies.clone() },
+        Config { work_dir: args.work_dir.clone().into(), motd: args.motd.clone(), source_url: args.source_url.clone(), status_interval, partition: args.partition, aircraft_json: args.aircraft_json, coverage_json: args.coverage_json, trusted_proxies: args.trusted_proxies.clone() },
         itx,
     ));
 

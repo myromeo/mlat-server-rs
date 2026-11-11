@@ -77,7 +77,7 @@ Every option of `mlat-server` is accepted:
 | `--work-dir DIR`, `--motd`, `--status-interval`, `--tag` | as the original (`--tag` is accepted and unused) |
 | `--check-leaks` | accepted, does nothing (it is a Python memory diagnostic) |
 
-Added: `--source-url URL` (the AGPL source location sent to receivers; set it to where this repository is), `--engine-threads N`, `--io-threads N`, `--no-aircraft-json`, `--trusted-proxy ADDR[/PREFIX]` (repeatable or comma-separated; see below).
+Added: `--source-url URL` (the AGPL source location sent to receivers; set it to where this repository is), `--engine-threads N`, `--io-threads N`, `--no-aircraft-json`, `--coverage-json` (per-station coverage counts in `coverage.json`, see `crates/mlat-server/src/coverage.rs`), `--trusted-proxy ADDR[/PREFIX]` (repeatable or comma-separated; see below).
 
 No port numbers are fixed in either program; the usual 31090 (receivers) and 31003 (filtered Basestation) work unchanged.
 
