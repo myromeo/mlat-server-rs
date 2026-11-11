@@ -24,11 +24,37 @@ use crate::receiver::Receiver;
 use crate::resolve::{resolve, AircraftMlat, AircraftTable, Group, MlatResult, ResolveEnv, ResolveStats};
 use crate::FTOM;
 use ahash::{AHashMap, AHashSet};
-use crossbeam_channel::{bounded, unbounded, Receiver as Rx, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver as Rx, Sender, TryRecvError};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// How long an idle matcher or pairer sleeps before looking at its queue again (env MLAT_IDLE_POLL_MS, default 5; 0 blocks on the
+/// channel instead). A thread that sleeps rather than blocks is never woken by a sender, so handing it a message costs no futex
+/// wake-up and context switch; on a virtual machine with steal those were about a fifth of the server's CPU (perf, 11 Nov 2026).
+/// A message waits at most this long; the order of messages is unchanged. Deterministic (test) engines always block: they wait for
+/// the pipeline after every observation, so a sleep there would only slow the comparison down.
+fn idle_poll() -> Option<Duration> {
+    static POLL: OnceLock<Option<Duration>> = OnceLock::new();
+    *POLL.get_or_init(|| {
+        let ms = std::env::var("MLAT_IDLE_POLL_MS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(5);
+        (ms > 0).then(|| Duration::from_millis(ms))
+    })
+}
+
+/// The next message, or None once every sender has gone. poll: sleep this long while the queue is empty (None: block).
+fn next_msg<T>(rx: &Rx<T>, poll: Option<Duration>) -> Option<T> {
+    let Some(pause) = poll else { return rx.recv().ok() };
+    loop {
+        match rx.try_recv() {
+            Ok(m) => return Some(m),
+            Err(TryRecvError::Empty) => std::thread::sleep(pause),
+            Err(TryRecvError::Disconnected) => return None,
+        }
+    }
+}
 
 const FORCE_MLAT_INTERVAL: f64 = 600.0;
 const NO_ADSB_MLAT_SECONDS: f64 = 120.0;
@@ -422,11 +448,11 @@ fn collect(collector: &Mutex<Collector>, kick: &Sender<()>, f: impl FnOnce(&mut 
 }
 
 impl Matcher {
-    fn run(mut self, rx: Rx<MatchMsg>) {
+    fn run(mut self, rx: Rx<MatchMsg>, poll: Option<Duration>) {
         let mut last_seq = 0u64;
         let mut announced = 0u64;
         'outer: loop {
-            let Ok(first) = rx.recv() else { break };
+            let Some(first) = next_msg(&rx, poll) else { break };
             let mut next = Some(first);
             let mut batch = 0;
             while let Some(msg) = next.take() {
@@ -773,8 +799,8 @@ struct Pairer {
 }
 
 impl Pairer {
-    fn run(mut self, rx: Rx<PairMsg>) {
-        while let Ok(msg) = rx.recv() {
+    fn run(mut self, rx: Rx<PairMsg>, poll: Option<Duration>) {
+        while let Some(msg) = next_msg(&rx, poll) {
             match msg {
                 PairMsg::Update { from, seq, u } => {
                     self.watermarks[from] = self.watermarks[from].max(seq);
@@ -1001,6 +1027,7 @@ impl Engine {
         let (results_tx, results_rx) = unbounded();
         let (kick_tx, kick_rx) = bounded::<()>(1);
         let mut handles = Vec::new();
+        let poll = if deterministic { None } else { idle_poll() };
 
         let mut pairer_tx = Vec::new();
         let mut pairer_rx = Vec::new();
@@ -1019,7 +1046,7 @@ impl Engine {
                 heap: BinaryHeap::new(),
                 ctr: 0,
             };
-            handles.push(std::thread::Builder::new().name(format!("pairer-{i}")).spawn(move || p.run(rx)).unwrap());
+            handles.push(std::thread::Builder::new().name(format!("pairer-{i}")).spawn(move || p.run(rx, poll)).unwrap());
         }
 
         let mut matcher_tx = Vec::new();
@@ -1042,7 +1069,7 @@ impl Engine {
                 rstats: ResolveStats::default(),
                 info: info.clone(),
             };
-            handles.push(std::thread::Builder::new().name(format!("matcher-{i}")).spawn(move || m.run(rx)).unwrap());
+            handles.push(std::thread::Builder::new().name(format!("matcher-{i}")).spawn(move || m.run(rx, poll)).unwrap());
         }
 
         Engine {

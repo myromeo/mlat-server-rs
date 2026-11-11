@@ -82,7 +82,7 @@ For a repeatable check of the whole pipeline without sockets or real time:
     cargo run --release -p mlat-tools --bin pipebench -- capture.jsonl rust.jsonl --threads 1
     testbed/compare_pipeline.py pipeline-golden.jsonl rust.jsonl
 
-`pipebench` runs deterministic by default (every observation waits for the pipeline to catch up); `--fast` runs it free, as in production. `py_sync_ref.py` and `syncbench` do the same for the clock-sync stage alone (`syncbench capture.jsonl --golden golden.jsonl --threads 1`).
+`pipebench` runs deterministic by default (every observation waits for the pipeline to catch up); `--fast` runs it free, as in production; give it `MLAT_IDLE_POLL_MS=0`, because it paces itself with a barrier every 10 ms of capture time and each barrier would otherwise wait out the idle poll of the engine threads. `py_sync_ref.py` and `syncbench` do the same for the clock-sync stage alone (`syncbench capture.jsonl --golden golden.jsonl --threads 1`).
 
 ## Results
 
